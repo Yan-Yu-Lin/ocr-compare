@@ -1,0 +1,11 @@
+[project]
+name = "paddleocr-test"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "paddleocr>=3.4.0",
+    "paddlepaddle>=3.3.0",
+    "pillow>=12.1.1",
+]

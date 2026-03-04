@@ -1,0 +1,18 @@
+# Virtual environments
+.venv/
+__pycache__/
+
+# Test data (sensitive documents)
+input-image-en/
+input-image-zh-tw/
+
+# OCR results (contain document text)
+*/results/
+*/results-livetext/
+*/results-smart/
+
+# uv lock files (can regenerate)
+uv.lock
+
+# OS files
+.DS_Store

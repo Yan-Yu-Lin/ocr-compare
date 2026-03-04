@@ -1,0 +1,11 @@
+[project]
+name = "rapidocr-test"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "onnxruntime>=1.24.2",
+    "pillow>=12.1.1",
+    "rapidocr>=3.6.0",
+]
