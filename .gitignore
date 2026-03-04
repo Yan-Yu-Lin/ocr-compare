@@ -10,6 +10,7 @@ input-image-zh-tw/
 */results/
 */results-livetext/
 */results-smart/
+**/debug-cells/
 
 # uv lock files (can regenerate)
 uv.lock
