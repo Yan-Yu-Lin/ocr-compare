@@ -657,33 +657,15 @@ def process_image(image_path: str, debug=False) -> str:
     )
     print(f"  [margins] {dict(margin_texts)}")
 
-    # Step 5: Per-cell OCR for col 1+ cells
-    ocr_count = 0
-    fallback_count = 0
+    # Step 5: Assign full-page OCR text to cells by position (hybrid approach)
+    # Uses full-page OCR for best character recognition + cell grid for structure
     for cell in cells:
-        if cell.width < MIN_CELL_WIDTH_FOR_OCR:
-            # Cell too small for per-cell OCR; use full-page fallback
-            cell.text = extract_fallback_text(
-                full_annotations, cell, img_h, img_w
-            )
-            cell.confidence = 0.5
-            fallback_count += 1
-            continue
+        cell.text = extract_fallback_text(
+            full_annotations, cell, img_h, img_w
+        )
+        cell.confidence = 0.5
 
-        text, conf = ocr_cell(img_color, cell)
-        cell.text = text
-        cell.confidence = conf
-        ocr_count += 1
-
-        # Fallback if per-cell OCR gave garbage
-        if not text.strip() or conf < LOW_CONFIDENCE:
-            fb = extract_fallback_text(full_annotations, cell, img_h, img_w)
-            if fb:
-                cell.text = fb
-                cell.confidence = 0.5
-                fallback_count += 1
-
-    print(f"  [ocr] cells={ocr_count}, fallbacks={fallback_count}")
+    print(f"  [hybrid] assigned full-page OCR text to {len(cells)} cells")
 
     # Step 6: Assemble
     output = assemble_output(cells, header_rows, body_rows, margin_texts, v_lines)
