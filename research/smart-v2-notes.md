@@ -157,15 +157,119 @@ However, character-level accuracy is sometimes worse because isolated cell OCR l
 
 A potential best-of-both-worlds approach: use v2's cell grid detection for structure, but run full-page OCR for the actual text content, then assign full-page OCR fragments to cells by position. This would preserve both structural correctness and contextual accuracy. Essentially, this is what v1 does with `TableGrid`, but v2's cell grid construction and classification logic is more robust.
 
-## Known Bugs (v2, not yet fixed)
+## Known Bugs (v2)
 
-1. `詢問案` merged span (Image 2) -- needs better span-splitting logic for margin labels
-2. Duplicate `家庭經濟狀況` line (Image 2) -- fallback emitting redundant text
-3. `身分證` on its own line without value -- the value `H225100716` is on the `統一編號` line instead
+1. ~~`詢問案` merged span (Image 2)~~ -- **FIXED** by cell-based margin label grouping
+2. ~~Duplicate `家庭經濟狀況` line (Image 2)~~ -- **FIXED** by intersection-based grid (cell no longer wrongly split)
+3. `身分證` on its own line without value -- the value `H225100716` is on the `統一編號` line instead (structural: merged value cell)
 4. Missing 問/答 markers on some body rows
-5. `第三次` should be `第二次` -- per-cell OCR misread
+5. Per-cell OCR character errors (e.g., `第三次` should be `第二次`, `凋站` should be `網站`)
 
 ## Files
 
 - `apple-vision/smart-v2/run_ocr.py` -- main pipeline (~570 lines)
 - `apple-vision/smart-v2/results/` -- OCR output for test images
+
+---
+
+## Update: Intersection-Based Cell Grid (2026-03-05)
+
+### The Problem
+
+`build_cell_grid` was fundamentally flawed: it sliced cells between every pair of adjacent horizontal lines, regardless of whether those h-lines actually existed at a given column position. This caused partial horizontal lines to wrongly bisect cells they don't touch.
+
+**Concrete example**: h16 at y=1741 only exists on the right side (x=634..2388). But the `家庭經濟狀況` label is in the left column (x=288..643). The old code cut the left column at y=1741, splitting the `家庭經濟狀況` cell into two halves. The top half got OCR'd as `家庭經濟狀況`, the bottom half was empty, causing the duplicate line bug.
+
+### Root Cause
+
+The old algorithm:
+```
+for each pair of adjacent h-lines (hi, hi+1):
+    find v-lines that span between them
+    create cells between consecutive v-lines
+```
+
+This treats every h-line as a full-width row boundary. But in real forms, some h-lines only span part of the table width (e.g., the line under the checkboxes only exists in the right value column, not in the left label column).
+
+### The Fix: Intersection-Based Grid
+
+New algorithm:
+
+1. **Build intersection matrix**: For each (h-line, v-line) pair, check if they actually cross. A horizontal line intersects a vertical line when the h-line's x-range covers the v-line's x-position AND the v-line's y-range covers the h-line's y-position.
+
+2. **Find cells from v-line pairs**: For each pair of v-lines (left, right), find all h-lines that intersect BOTH. Consecutive such h-lines define the top/bottom of a cell.
+
+3. **Block wider cells**: When checking v-line pair (vi_left, vi_right), skip if an intermediate v-line also intersects both the top and bottom h-lines (meaning a narrower cell should be created instead).
+
+4. **Assign row/col indices**: Sort cells by y-position (rows) and x-position (columns within each row).
+
+```python
+def _lines_intersect(h_line, v_line, tol=25):
+    hy, hxs, hxe = h_line
+    vx, vys, vye = v_line
+    return (hxs - tol <= vx <= hxe + tol) and (vys - tol <= hy <= vye + tol)
+```
+
+### Key Insight: V-Line Pairs, Not Adjacent V-Lines
+
+The first attempt iterated over adjacent v-line pairs only (vi, vi+1). This failed for body rows where the middle v-line (v2, label/value separator) doesn't exist -- no cells were created between v1 and v3 because the algorithm couldn't "skip over" v2.
+
+The fix iterates over ALL v-line pairs (vi_left, vi_right for vi_right > vi_left), but blocks wider cells when a narrower one exists. This naturally handles:
+- Header rows: v0-v1 (margin), v1-v2 (label), v2-v3 (value) -- all 3 cells
+- Body rows: v0-v1 (margin), v1-v3 (content) -- v2 doesn't intersect body h-lines, so the wide cell v1-v3 is created
+
+### Merged Cells Arise Naturally
+
+When a h-line doesn't intersect a v-line, no cell boundary is created there. The cell extends across multiple "old rows". This correctly handles:
+
+- `家庭經濟狀況` label: h16 doesn't intersect v2 (label/value boundary), so the label cell spans from h15 to h17 instead of being cut at h16
+- `受詢問人` margin: the margin column spans from h4 to h17, one tall cell
+- Body content cells: the wide content column (v1 to v3) isn't split by v2
+
+### Additional Fixes
+
+**Cell classification**: Changed from counting columns per row (broke when margin column is absent) to checking whether a cell's right edge aligns with the middle v-line. If any cell in a row has its right edge near the label/value separator, that row is a header row.
+
+**Cell role identification in assembly**: Changed from column index (col 0/1/2) to x-position based identification. Cells are classified as margin (narrow, <120px), label (right edge at mid-v-line), or value (left edge at mid-v-line) by their actual pixel coordinates.
+
+**Margin label grouping**: Changed from y-gap/row-gap heuristics to cell-based grouping. Characters in the same margin cell form one label, characters in different margin cells are separate labels. This correctly separates `詢問` (in margin cell r1) from `案` (in margin cell r3).
+
+**Single-char margin suppression**: A single-character margin label that duplicates part of the label cell text on the same row is suppressed. E.g., margin `案` is suppressed when the label cell already has `案由`.
+
+### Results After Fix
+
+**Image 2 (億萬詐騙)**:
+
+| Issue | Before fix | After fix |
+|-------|-----------|-----------|
+| 家庭經濟狀況 | Duplicated (line 19 + line 20) | Single line: `家庭經濟狀況  貧寒勉持小康中產富裕` |
+| 詢問案 merged | `詢問案` on one line | `詢問` (line 2), `案由  詐欺.` (line 6) |
+| Body rows missing cells | Only margin col in body | Margin + content cells in all body rows |
+| Header label-value pairing | Some labels missing | All labels correctly paired with values |
+
+**Image 1 (被害人調查筆錄)**:
+
+| Issue | Before fix | After fix |
+|-------|-----------|-----------|
+| 家庭經濟狀況 | Potentially split | Single line: `家庭經濟狀況  貧寒勉持小康中產富裕` |
+| 別(綽)號/性別 merge | Value cell correctly spans both rows | `別（綽）號  女` / `性别` (merged value cell, structural) |
+| Body rows | Body cells present | All body rows have margin + content |
+
+### Remaining Issues
+
+1. **`V` on its own line**: The checkmark `V` is in a right-side-only cell (r16) that has no label cell. This is structurally correct -- the h-line only exists on the right, creating a separate row there. The `V` belongs semantically with `家庭經濟狀況` but structurally it's in a different cell.
+
+2. **`別（綽）號  女`**: The value `女` should go with `性別`, not `別(綽)號`. This is because h6 doesn't reach the right edge (v3), so the value column merges across the `別(綽)號` and `性別` rows. The OCR of that merged cell returns `女`, which gets paired with the first label row. This is a structural limitation of the form -- the value cells are physically merged.
+
+3. **`身分證` without value**: Same merged cell issue -- the value `H225100716` is in a cell that spans both `身分證` and `統一編號` rows, and gets paired with `統一編號`.
+
+4. **Per-cell OCR accuracy**: Some character recognition errors compared to full-page OCR (see earlier notes). These are inherent to the cell-based approach.
+
+### Cell Counts
+
+| Image | h-lines | v-lines | Cells (before) | Cells (after) |
+|-------|---------|---------|----------------|---------------|
+| Image 1 | 26 | 4 | 41 | 49 |
+| Image 2 | 29 | 4 | 45 | 57 |
+
+The increased cell count comes from body rows now having both margin and content cells (previously body rows only had margin cells due to the adjacent-v-line-only algorithm).

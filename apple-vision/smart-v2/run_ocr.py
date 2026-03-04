@@ -102,26 +102,110 @@ def _consolidate_lines(lines, key, tol):
     return result
 
 
+def _lines_intersect(h_line, v_line, tol=25):
+    """Check whether a horizontal line and a vertical line intersect.
+
+    An intersection exists when the h_line's x-range covers the v_line's
+    x-position AND the v_line's y-range covers the h_line's y-position.
+    """
+    hy, hxs, hxe = h_line
+    vx, vys, vye = v_line
+    return (hxs - tol <= vx <= hxe + tol) and (vys - tol <= hy <= vye + tol)
+
+
 def build_cell_grid(h_lines, v_lines):
-    """Build a grid of cells from detected lines."""
+    """Build a grid of cells from line intersections.
+
+    Instead of naively slicing between every pair of adjacent horizontal
+    lines, we find actual intersection points.  A cell is only created
+    when all four corners are real intersections.  This correctly handles
+    partial horizontal lines (e.g. a line that only spans the right half
+    of the table) -- they won't split columns they don't reach.
+
+    Merged / spanning cells arise naturally: when an interior horizontal
+    line doesn't intersect a vertical line, no cell boundary is created
+    at that position, so the cell extends across multiple "rows".
+
+    Algorithm:
+    For every pair of v-lines (vi_left, vi_right) that are "adjacent"
+    (no v-line between them intersects both the same top and bottom
+    h-lines), find h-lines that intersect BOTH.  Consecutive such h-lines
+    define the top/bottom of a cell.
+    """
+    h_sorted = sorted(h_lines, key=lambda l: l[0])
+    v_sorted = sorted(v_lines, key=lambda l: l[0])
+
+    n_h = len(h_sorted)
+    n_v = len(v_sorted)
+
+    # Build intersection matrix
+    intersects = [[False] * n_v for _ in range(n_h)]
+    for hi, hl in enumerate(h_sorted):
+        for vi, vl in enumerate(v_sorted):
+            intersects[hi][vi] = _lines_intersect(hl, vl)
+
+    # For each pair of v-lines, find h-lines intersecting both,
+    # then create cells between consecutive such h-lines.
     cells = []
-    for i in range(len(h_lines) - 1):
-        y_top = h_lines[i][0]
-        y_bot = h_lines[i + 1][0]
+    seen_rects = set()
 
-        row_vlines = []
-        for x, ys, ye in v_lines:
-            if ys <= y_top + 20 and ye >= y_bot - 20:
-                row_vlines.append(x)
-        row_vlines.sort()
+    for vi_left in range(n_v):
+        for vi_right in range(vi_left + 1, n_v):
+            # h-lines intersecting both v-lines
+            common_h = [hi for hi in range(n_h)
+                        if intersects[hi][vi_left] and intersects[hi][vi_right]]
+            if len(common_h) < 2:
+                continue
 
-        if len(row_vlines) < 2:
-            x_left = h_lines[i][1]
-            x_right = h_lines[i][2]
-            cells.append(Cell(i, 0, x_left, y_top, x_right, y_bot))
-        else:
-            for j in range(len(row_vlines) - 1):
-                cells.append(Cell(i, j, row_vlines[j], y_top, row_vlines[j + 1], y_bot))
+            for k in range(len(common_h) - 1):
+                hi_top = common_h[k]
+                hi_bot = common_h[k + 1]
+                y_top = h_sorted[hi_top][0]
+                y_bot = h_sorted[hi_bot][0]
+                x_left = v_sorted[vi_left][0]
+                x_right = v_sorted[vi_right][0]
+
+                # Skip if an intermediate v-line also intersects both
+                # hi_top and hi_bot -- that means a narrower cell should
+                # be created instead of this wider one.
+                blocked = False
+                for vi_mid in range(vi_left + 1, vi_right):
+                    if (intersects[hi_top][vi_mid] and
+                            intersects[hi_bot][vi_mid]):
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+
+                rect_key = (y_top, y_bot, x_left, x_right)
+                if rect_key not in seen_rects:
+                    seen_rects.add(rect_key)
+                    cells.append(Cell(row=-1, col=-1,
+                                      x1=x_left, y1=y_top,
+                                      x2=x_right, y2=y_bot))
+
+    # Assign logical row indices.
+    # Sort cells top-to-bottom; cells with the same y_top get the same row.
+    cells.sort(key=lambda c: (c.y1, c.x1))
+    row_idx = 0
+    prev_y = None
+    ROW_Y_TOL = 15
+    for c in cells:
+        if prev_y is None or abs(c.y1 - prev_y) > ROW_Y_TOL:
+            if prev_y is not None:
+                row_idx += 1
+            prev_y = c.y1
+        c.row = row_idx
+
+    # Reassign col indices within each row (0-based, left to right)
+    row_map = {}
+    for c in cells:
+        row_map.setdefault(c.row, []).append(c)
+    for row_cells in row_map.values():
+        row_cells.sort(key=lambda c: c.x1)
+        for j, c in enumerate(row_cells):
+            c.col = j
+
     return cells
 
 
@@ -156,15 +240,55 @@ class Cell:
 # Cell classification
 # ------------------------------------------------------------------
 
-def classify_cells(cells):
-    """Classify cells into header (3-col) and body (2-col) regions."""
-    row_cols = {}
+def classify_cells(cells, v_lines):
+    """Classify cells into header and body regions.
+
+    Header rows: rows that have the label/value column split (the middle
+    v-line separates label from value).
+    Body rows: rows with a single wide content column (no label/value split).
+
+    We detect the middle v-line as the one that's NOT the leftmost or
+    rightmost, and that has a moderate x-position.  A row is "header" if
+    it contains a cell whose right edge is near that middle v-line.
+    """
+    v_sorted = sorted(v_lines, key=lambda l: l[0])
+
+    # Find the middle v-line (label/value separator).
+    # It's the one with a limited y-range (only exists in the header area).
+    # If there are exactly 4 v-lines, it's index 2 (0=left border,
+    # 1=margin/label split, 2=label/value split, 3=right border).
+    # More generally, pick the interior v-line with the shortest y-span.
+    interior_v = v_sorted[1:-1] if len(v_sorted) > 2 else []
+    mid_v_x = None
+    if interior_v:
+        # The label/value separator typically has the shortest span
+        # (only exists in header rows), while the margin line spans
+        # most of the page.
+        mid_v = min(interior_v, key=lambda v: v[2] - v[1])
+        mid_v_x = mid_v[0]
+
+    row_map = {}
     for c in cells:
-        row_cols.setdefault(c.row, set()).add(c.col)
-    num_cols_map = {r: len(cols) for r, cols in row_cols.items()}
-    header_rows = {r for r, n in num_cols_map.items() if n >= 3}
-    body_rows = {r for r, n in num_cols_map.items() if n < 3}
-    return header_rows, body_rows, num_cols_map
+        row_map.setdefault(c.row, []).append(c)
+
+    header_rows = set()
+    body_rows = set()
+
+    for r, row_cells in row_map.items():
+        is_header = False
+        if mid_v_x is not None:
+            for c in row_cells:
+                # A cell whose right edge aligns with the middle v-line
+                # means this row has the label/value split.
+                if abs(c.x2 - mid_v_x) < 30:
+                    is_header = True
+                    break
+        if is_header:
+            header_rows.add(r)
+        else:
+            body_rows.add(r)
+
+    return header_rows, body_rows
 
 
 # ------------------------------------------------------------------
@@ -271,64 +395,51 @@ def extract_margin_labels(annotations, cells, header_rows, img_h, img_w):
         return {}
 
     margin_texts = {}
-    col0_cells = [c for c in cells if c.col == 0]
+    # Margin cells are the narrow ones (< MIN_CELL_WIDTH_FOR_OCR pixels wide)
+    margin_cells = [c for c in cells if c.width < MIN_CELL_WIDTH_FOR_OCR]
 
-    # Collect single-char annotations in col-0 x-range for header rows
-    col0_header_chars = []
-    col0_body_markers = []
+    # For each margin cell, collect the single-char annotations that fall
+    # within it.  Characters in the same margin cell form one label.
+    # This naturally handles span boundaries -- if 詢 and 問 are in one
+    # margin cell (r1, y=245-521) and 案 is in a different one (r3,
+    # y=521-613), they'll be separate labels.
+    for mc in margin_cells:
+        cell_chars = []  # (char, conf, px_cy)
+        cell_markers = []  # (marker_text, px_cy) for 問/答
 
-    for text, conf, bbox in annotations:
-        stripped = text.strip()
-        if not stripped:
-            continue
+        for text, conf, bbox in annotations:
+            stripped = text.strip()
+            if not stripped:
+                continue
 
-        # Convert Apple Vision coords to pixel coords
-        bx, by, bw, bh = bbox
-        px_x = bx * img_w
-        px_cy = img_h * (1.0 - (by + bh / 2))
+            bx, by, bw, bh = bbox
+            px_x = bx * img_w
+            px_cy = img_h * (1.0 - (by + bh / 2))
 
-        # Check if it falls within any col-0 cell
-        for c in col0_cells:
-            if c.x1 - 10 <= px_x <= c.x2 + 10 and c.y1 - 10 <= px_cy <= c.y2 + 10:
-                if c.row in header_rows:
-                    if len(stripped) == 1 and stripped not in GARBAGE_CHARS:
-                        col0_header_chars.append((stripped, conf, c.row, px_cy))
-                elif stripped in ("問", "答"):
-                    col0_body_markers.append((stripped, c.row))
-                break
+            # Check if annotation falls within this margin cell
+            if not (mc.x1 - 10 <= px_x <= mc.x2 + 10 and
+                    mc.y1 - 10 <= px_cy <= mc.y2 + 10):
+                continue
 
-    # Group header chars by contiguous row spans.
-    # Key insight: chars at different row indices indicate different labels.
-    # 詢問 is at rows 1-2, 案 at row 3, 受詢問人 at rows 8-15 etc.
-    if col0_header_chars:
-        # Sort by pixel y (top to bottom)
-        col0_header_chars.sort(key=lambda x: x[3])
-
-        # Group into spans: consecutive chars with small y-gaps
-        spans = []
-        current_span = [col0_header_chars[0]]
-        for ch in col0_header_chars[1:]:
-            prev_py = current_span[-1][3]
-            curr_py = ch[3]
-            prev_row = current_span[-1][2]
-            curr_row = ch[2]
-            # New span if: large y-gap OR skipped rows
-            if curr_py - prev_py > 200 or curr_row - prev_row > 2:
-                spans.append(current_span)
-                current_span = [ch]
+            if mc.row in header_rows:
+                if len(stripped) == 1 and stripped not in GARBAGE_CHARS:
+                    cell_chars.append((stripped, conf, px_cy))
             else:
-                current_span.append(ch)
-        spans.append(current_span)
+                if stripped in ("問", "答"):
+                    cell_markers.append((stripped, px_cy))
 
-        for span in spans:
-            merged_text = "".join(ch for ch, _, _, _ in span)
-            merged_text = VERTICAL_LABEL_CORRECTIONS.get(merged_text, merged_text)
-            first_row = span[0][2]
-            margin_texts[first_row] = merged_text
+        if cell_chars:
+            # Sort top-to-bottom and join
+            cell_chars.sort(key=lambda x: x[2])
+            merged_text = "".join(ch for ch, _, _ in cell_chars)
+            merged_text = VERTICAL_LABEL_CORRECTIONS.get(
+                merged_text, merged_text)
+            margin_texts[mc.row] = merged_text
 
-    # Body markers
-    for marker, row in col0_body_markers:
-        margin_texts[row] = marker
+        if cell_markers:
+            # Pick the first marker (there should be only one per cell)
+            cell_markers.sort(key=lambda x: x[1])
+            margin_texts[mc.row] = cell_markers[0][0]
 
     return margin_texts
 
@@ -371,13 +482,44 @@ def extract_fallback_text(annotations, cell, img_h, img_w):
 # Assembly
 # ------------------------------------------------------------------
 
-def assemble_output(cells, header_rows, body_rows, margin_texts):
-    """Assemble cells into structured text output."""
+def assemble_output(cells, header_rows, body_rows, margin_texts, v_lines):
+    """Assemble cells into structured text output.
+
+    Cell roles are identified by x-position, not column index:
+    - Margin cell: narrow cell on the far left (x1 near leftmost v-line)
+    - Label cell: cell whose right edge aligns with the middle v-line
+    - Value cell: cell whose left edge aligns with the middle v-line
+    - Content cell: wide cell in body rows (no label/value split)
+    """
+    v_sorted = sorted(v_lines, key=lambda l: l[0])
+    # Middle v-line = the interior v-line with shortest y-span
+    interior_v = v_sorted[1:-1] if len(v_sorted) > 2 else []
+    mid_v_x = None
+    if interior_v:
+        mid_v = min(interior_v, key=lambda v: v[2] - v[1])
+        mid_v_x = mid_v[0]
+
+    def is_margin_cell(c):
+        """Narrow cell on the far left (margin column)."""
+        return c.width < MIN_CELL_WIDTH_FOR_OCR
+
+    def is_label_cell(c):
+        """Cell whose right edge aligns with the middle v-line."""
+        if mid_v_x is None:
+            return False
+        return abs(c.x2 - mid_v_x) < 30
+
+    def is_value_cell(c):
+        """Cell whose left edge aligns with the middle v-line."""
+        if mid_v_x is None:
+            return False
+        return abs(c.x1 - mid_v_x) < 30
+
     row_map = {}
     for c in cells:
         row_map.setdefault(c.row, []).append(c)
     for row in row_map.values():
-        row.sort(key=lambda c: c.col)
+        row.sort(key=lambda c: c.x1)
 
     lines = []
     max_row = max(c.row for c in cells)
@@ -390,45 +532,55 @@ def assemble_output(cells, header_rows, body_rows, margin_texts):
         row_cells = row_map[r]
 
         if r in header_rows:
-            # Emit margin label if new and not yet emitted
+            # Find label and value cells by x-position
+            label_text = ""
+            value_text = ""
+            for c in row_cells:
+                if is_margin_cell(c):
+                    continue  # skip margin column
+                if is_label_cell(c):
+                    label_text = c.text.strip()
+                elif is_value_cell(c):
+                    value_text = c.text.strip()
+
+            # Emit margin label if new and not yet emitted.
+            # Suppress single-char margin labels that are already part of
+            # the label cell text (e.g. margin "案" when label is "案由").
             margin_label = ""
-            for mr, mt in margin_texts.items():
+            for mr, mt in sorted(margin_texts.items()):
                 if mr <= r and mr not in emitted_margins and mr in header_rows:
-                    # Check this margin label covers this row
+                    # Skip single-char margin labels redundant with the
+                    # label cell on the same row
+                    if (len(mt) == 1 and label_text and
+                            mt in label_text):
+                        emitted_margins.add(mr)
+                        continue
                     margin_label = mt
                     emitted_margins.add(mr)
 
             if margin_label:
                 lines.append(margin_label)
 
-            # Get field label (col 1) and value (col 2)
-            col1_text = ""
-            col2_text = ""
-            for c in row_cells:
-                if c.col == 1:
-                    col1_text = c.text.strip()
-                elif c.col == 2:
-                    col2_text = c.text.strip()
-
-            if col1_text and col2_text:
-                lines.append(f"{col1_text}  {col2_text}")
-            elif col1_text:
-                lines.append(col1_text)
-            elif col2_text:
-                lines.append(col2_text)
+            if label_text and value_text:
+                lines.append(f"{label_text}  {value_text}")
+            elif label_text:
+                lines.append(label_text)
+            elif value_text:
+                lines.append(value_text)
 
         else:
             # Body row
             marker = margin_texts.get(r, "")
             content_parts = []
             for c in row_cells:
-                if c.col >= 1 and c.text.strip():
+                if is_margin_cell(c):
+                    continue  # skip margin column
+                if c.text.strip():
                     content_parts.append(c.text.strip())
 
             content = "\n".join(content_parts) if content_parts else ""
 
             if marker and content:
-                # Prefix first line with marker
                 content_lines = content.split("\n")
                 content_lines[0] = f"{marker}  {content_lines[0]}"
                 lines.extend(content_lines)
@@ -485,7 +637,7 @@ def process_image(image_path: str, debug=False) -> str:
         save_debug_cells(img_color, cells, h_lines, v_lines, img_path.stem, debug_dir)
 
     # Step 2: Classify cells
-    header_rows, body_rows, num_cols = classify_cells(cells)
+    header_rows, body_rows = classify_cells(cells, v_lines)
     print(f"  [classify] header={len(header_rows)} body={len(body_rows)}")
 
     # Step 3: Full-page OCR (used for margin labels + fallback)
@@ -502,9 +654,6 @@ def process_image(image_path: str, debug=False) -> str:
     ocr_count = 0
     fallback_count = 0
     for cell in cells:
-        if cell.col == 0:
-            continue
-
         if cell.width < MIN_CELL_WIDTH_FOR_OCR:
             # Cell too small for per-cell OCR; use full-page fallback
             cell.text = extract_fallback_text(
@@ -530,7 +679,7 @@ def process_image(image_path: str, debug=False) -> str:
     print(f"  [ocr] cells={ocr_count}, fallbacks={fallback_count}")
 
     # Step 6: Assemble
-    output = assemble_output(cells, header_rows, body_rows, margin_texts)
+    output = assemble_output(cells, header_rows, body_rows, margin_texts, v_lines)
     return output
 
 
