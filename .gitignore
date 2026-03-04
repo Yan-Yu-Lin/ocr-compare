@@ -7,9 +7,9 @@ input-image-en/
 input-image-zh-tw/
 
 # OCR results (contain document text)
-*/results/
-*/results-livetext/
-*/results-smart/
+**/results/
+**/results-livetext/
+**/results-smart/
 **/debug-cells/
 
 # uv lock files (can regenerate)
