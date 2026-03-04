@@ -301,11 +301,18 @@ def ocr_cell(img_color, cell, padding=CELL_PADDING):
     Returns (text, avg_confidence). Text preserves line structure
     with newline separators.
     """
-    inset = 5
-    y1 = max(0, cell.y1 + inset)
-    y2 = min(img_color.shape[0], cell.y2 - inset)
-    x1 = max(0, cell.x1 + inset)
-    x2 = min(img_color.shape[1], cell.x2 - inset)
+    # Dynamic outset: large cells get more context, small cells stay tight
+    min_dim = min(cell.width, cell.height)
+    if min_dim > 300:
+        outset = 15
+    elif min_dim > 150:
+        outset = 2
+    else:
+        outset = 0
+    y1 = max(0, cell.y1 - outset)
+    y2 = min(img_color.shape[0], cell.y2 + outset)
+    x1 = max(0, cell.x1 - outset)
+    x2 = min(img_color.shape[1], cell.x2 + outset)
 
     crop = img_color[y1:y2, x1:x2]
     if crop.size == 0:
