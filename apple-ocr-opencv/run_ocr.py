@@ -680,7 +680,7 @@ def find_images(folder: Path) -> list[Path]:
 
 
 def main():
-    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("../../input-image-zh-tw")
+    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("../input-image-zh-tw")
 
     if folder.is_file():
         images = [folder]

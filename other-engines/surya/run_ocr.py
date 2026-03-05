@@ -41,7 +41,7 @@ def collect_images(folder: str) -> list[Path]:
 
 
 def main():
-    folder = sys.argv[1] if len(sys.argv) > 1 else "../input-image-en"
+    folder = sys.argv[1] if len(sys.argv) > 1 else "../../input-image-en"
 
     image_paths = collect_images(folder)
     print(f"Found {len(image_paths)} image(s) in '{folder}'.\n")

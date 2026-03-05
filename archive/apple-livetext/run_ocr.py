@@ -17,7 +17,7 @@ def find_images(folder: Path) -> list[Path]:
 
 
 def main():
-    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("../input-image-en")
+    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("../../input-image-en")
 
     if not folder.is_dir():
         print(f"Error: '{folder}' is not a directory.")

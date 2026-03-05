@@ -53,8 +53,8 @@ def main():
     parser.add_argument(
         "folder",
         nargs="?",
-        default="../input-image-en",
-        help="Path to folder containing images (default: ../input-image-en/)",
+        default="../../input-image-en",
+        help="Path to folder containing images (default: ../../input-image-en/)",
     )
     parser.add_argument(
         "--lang",

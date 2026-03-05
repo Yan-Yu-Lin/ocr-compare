@@ -1,8 +1,7 @@
 [project]
-name = "apple-vision"
+name = "apple-ocr-opencv"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Cell-based OCR using Apple Vision + OpenCV table detection"
 requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.4.2",

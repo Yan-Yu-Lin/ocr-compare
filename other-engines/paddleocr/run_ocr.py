@@ -7,7 +7,7 @@ from pathlib import Path
 
 def main():
     # Determine input folder
-    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("../input-image-en")
+    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("../../input-image-en")
 
     if not folder.exists():
         print(f"Folder not found: {folder}")
