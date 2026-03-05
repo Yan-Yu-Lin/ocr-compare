@@ -1,69 +1,92 @@
-# OCR 工具比較測試
+# OCR 工具比較研究
 
-比較各種開源 OCR 工具在繁體中文 + 英文文件上的表現。
+針對繁體中文法律文件（警詢調查筆錄），比較各種 OCR 方案的辨識效果。
+
+## 主工具：apple-ocr-opencv
+
+結合 Apple Vision OCR + OpenCV 格線偵測的混合方案。
+
+- **原理**：Apple Vision 跑整頁 OCR 拿到文字和座標，OpenCV 偵測表格格線建出格子結構，再把文字按座標分配到對應的格子裡
+- **準確度**：96.3% 字元正確率（三頁繁體中文法律文件測試）
+- **速度**：每頁約 1.2 秒（M1 Max）
+- **限制**：僅限 macOS（Apple Vision 是平台專屬的）
+
+```bash
+cd apple-ocr-opencv
+uv sync
+uv run python run_ocr.py ../input-image-zh-tw
+```
 
 ## 資料夾結構
 
 ```
 ocr-compare/
-├── input-image-en/          # 英文測試圖片（共用）
-├── input-image-zh-tw/       # 中文/中英混合測試圖片（共用）
-├── convert_pdfs.py          # PDF → PNG 轉換工具（uv run 直接跑）
-├── rapidocr/                # ✅ 完成測試
-├── paddleocr/               # ⚠️ 部分完成（跑太重，電腦凍住）
-├── tesseract/               # ✅ 完成測試
-├── easyocr/                 # ❌ 太吃資源，被砍掉
-└── surya/                   # ❌ 版本衝突，沒跑成
+├── apple-ocr-opencv/           # 主工具（Apple Vision + OpenCV 混合方案）
+├── other-engines/              # 其他 OCR 引擎
+│   ├── apple-vision-raw/       # Apple Vision 原始版（無後處理）
+│   ├── apple-vision-swift/     # Swift RecognizeDocumentsRequest 實驗
+│   ├── rapidocr/               # RapidOCR (ONNX)
+│   ├── tesseract/              # Tesseract + pytesseract
+│   ├── paddleocr/              # PaddleOCR 3.x
+│   ├── easyocr/                # EasyOCR
+│   └── surya/                  # Surya OCR
+├── archive/                    # 過程中的舊版本
+│   ├── smart-v1/               # OpenCV 後處理第一版
+│   └── apple-livetext/         # Apple LiveText 後端測試
+├── research/                   # 研究筆記和報告
+├── input-image-en/             # 英文測試圖片（gitignore）
+├── input-image-zh-tw/          # 中文測試圖片（gitignore）
+├── convert_pdfs.py             # PDF → 300 DPI PNG 轉換工具
+└── HANDOVER.md                 # 完整研究交接文件
 ```
 
-## 測試文件
+## 各引擎測試結果
 
-- `被害人調查筆錄-北市提供.pdf` — 5 頁
-- `億萬詐騙-去識別化(1).pdf` — 18 頁
+| 引擎 | 測試狀態 | 繁中品質 | 評分 | 速度 | 備註 |
+|------|---------|---------|:---:|------|------|
+| **Apple Vision + OpenCV** | 完成 | 很好 | **8.9** | 1.2s/頁 | 主工具，混合方案 |
+| Apple Vision (raw) | 完成 | 很好 | 8.9 | 1.0s/頁 | 認字準但表格結構亂 |
+| Apple LiveText | 完成 | 不穩定 | — | 1.2s/頁 | 偶爾整句亂碼 |
+| Swift RecognizeDocumentsRequest | 完成 | 跟 raw 差不多 | — | 0.9s/頁 | 表格偵測不穩定 |
+| RapidOCR | 完成 | 中等偏低 | 6.1 | — | 用簡體模型辨識繁體，大量繁簡混用 |
+| Tesseract | 完成 | 極差 | 2.6 | — | 大量亂碼，不堪用 |
+| PaddleOCR | 部分完成 | 未完整評估 | — | — | 跑到一半電腦凍住 |
+| EasyOCR | 未完成 | — | — | — | 太吃資源被砍掉 |
+| Surya | 未完成 | — | — | — | surya-ocr 跟 transformers 版本衝突 |
 
-PDF 用 `convert_pdfs.py` 轉成 300 DPI PNG 後丟給各工具辨識。
+## 主要發現
+
+1. **Apple Vision 是繁體中文最好的非中國 OCR 方案**，跑在 Neural Engine 上不吃 CPU/GPU
+2. **純 OCR 認字沒問題，表格結構才是難點**，所以需要 OpenCV 輔助
+3. **裁切每格單獨 OCR 反而更差**，因為 Apple Vision 需要上下文來輔助辨識
+4. **混合方案（整頁 OCR + 格線偵測分配）是最佳組合**
+5. **剩餘的錯誤主要來自 Apple Vision 本身**：MetaMask 辨識不穩定、形近字混淆（間→問、大→太）
 
 ## 怎麼跑
 
 ```bash
-# 先轉 PDF（如果還沒轉）
+# 1. 把 PDF 放進 input-image-zh-tw/
+# 2. 轉成 PNG
 ./convert_pdfs.py
 
-# 各工具跑法
-cd rapidocr  && uv run python run_ocr.py ../input-image-zh-tw && cd ..
-cd paddleocr && uv run python run_ocr.py ../input-image-zh-tw && cd ..
-cd tesseract && uv run python run_ocr.py ../input-image-zh-tw --lang chi_tra+eng && cd ..
-cd easyocr   && uv run python run_ocr.py ../input-image-zh-tw --lang "en,ch_tra" && cd ..
-cd surya     && uv run python run_ocr.py ../input-image-zh-tw && cd ..
+# 3. 跑主工具
+cd apple-ocr-opencv && uv sync && uv run python run_ocr.py ../input-image-zh-tw
+
+# 4. 跑其他引擎做對照（各自獨立跑，不要同時跑）
+cd other-engines/rapidocr && uv sync && uv run python run_ocr.py ../../input-image-zh-tw
+cd other-engines/tesseract && uv sync && uv run python run_ocr.py ../../input-image-zh-tw --lang chi_tra+eng
 ```
 
-結果存在各工具的 `results/` 資料夾裡，每頁一個 .txt。
+結果存在各工具的 `results/` 裡（被 gitignore，不會上傳）。
 
-## 已知問題
+## 研究文件
 
-### 資源消耗嚴重
-五個工具同時跑 23 張 300 DPI 圖片會把 M1 Max 搞到凍住。建議：
-- **一次只跑一個工具**
-- RapidOCR 和 Tesseract 比較輕，可以放心跑
-- PaddleOCR 中等重量，單獨跑應該沒問題
-- EasyOCR 和 Surya 依賴 PyTorch，吃記憶體很兇
-
-### Surya 版本衝突
-`surya-ocr 0.17.1` 跟 `transformers 5.2.0` 不相容，`SuryaDecoderConfig` 缺少 `pad_token_id` 屬性。需要等上游修復或鎖定 transformers 版本。
-
-### 輕量替代方案（待研究）
-macOS 內建的 Apple Vision framework (`VNRecognizeTextRequest`) 可能是更實際的選擇：
-- 不需要額外裝任何東西
-- 用 Apple Neural Engine，不吃 CPU/GPU
-- CleanShot X、TextSniper 等 app 底層可能就是用這個
-- 支援繁體中文（待確認）
-
-## 各工具簡評
-
-| 工具 | 安裝難度 | 資源消耗 | 中文品質 | 速度 |
-|------|---------|---------|---------|------|
-| RapidOCR | 簡單 | 低 | 待評估 | 快 |
-| Tesseract | 簡單（需 brew） | 低 | 待評估 | 中等 |
-| PaddleOCR | 中等 | 中高 | 預期最好 | 中等 |
-| EasyOCR | 簡單 | 高（PyTorch） | 預期普通 | 慢 |
-| Surya | 簡單 | 高（PyTorch） | 預期不錯 | 慢 |
+| 文件 | 內容 |
+|------|------|
+| `HANDOVER.md` | 完整研究交接，包含所有發現和 benchmark 數據 |
+| `research/accuracy-report.md` | 三頁逐字比對的準確度報告 |
+| `research/apple-ocr-frameworks.md` | Apple 四套 OCR API 的完整分析 |
+| `research/apple-vision-vs-livetext.md` | Vision vs LiveText 後端比較 |
+| `research/smart-ocr-improvements.md` | OpenCV 格線偵測的改進過程 |
+| `research/smart-v2-notes.md` | 裁切 OCR vs 混合方案的比較 |
+| `research/swift-ocr-notes.md` | Swift RecognizeDocumentsRequest 實測 |
