@@ -1,0 +1,9 @@
+{
+  "name": "tesseract-js-ocr-test",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "tesseract.js": "^5",
+    "sharp": "^0.33"
+  }
+}

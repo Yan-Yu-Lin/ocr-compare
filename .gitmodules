@@ -1,0 +1,3 @@
+[submodule "apple-ocr-opencv-results"]
+	path = apple-ocr-opencv-results
+	url = https://github.com/Yan-Yu-Lin/apple-ocr-opencv-results.git

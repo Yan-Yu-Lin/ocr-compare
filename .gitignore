@@ -15,5 +15,12 @@ input-image-zh-tw/
 # uv lock files (can regenerate)
 uv.lock
 
+# Node/Bun
+node_modules/
+bun.lock
+
+# Tesseract language data (large binary files)
+*.traineddata
+
 # OS files
 .DS_Store

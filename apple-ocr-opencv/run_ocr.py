@@ -643,6 +643,15 @@ def process_image(image_path: str, debug=False) -> str:
         debug_dir = Path(__file__).parent / "debug-cells"
         save_debug_cells(img_color, cells, h_lines, v_lines, img_path.stem, debug_dir)
 
+    if not cells:
+        # No table structure found — fall back to full-page OCR only
+        full_annotations = run_full_page_ocr(img_path)
+        print(f"  [no grid] falling back to full-page OCR ({len(full_annotations)} annotations)")
+        if not full_annotations:
+            return "(empty page)"
+        sorted_ann = sorted(full_annotations, key=lambda r: -(r[2][1] + r[2][3] / 2))
+        return "\n".join(t for t, c, b in sorted_ann)
+
     # Step 2: Classify cells
     header_rows, body_rows = classify_cells(cells, v_lines)
     print(f"  [classify] header={len(header_rows)} body={len(body_rows)}")

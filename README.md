@@ -2,6 +2,12 @@
 
 針對繁體中文法律文件（警詢調查筆錄），比較各種 OCR 方案的辨識效果。
 
+## 重要：僅限 macOS
+
+本專案的最佳方案（Apple Vision）是 macOS 專屬的，依賴 Apple Neural Engine，**Windows 和 Linux 無法使用**。
+
+如果你不是 Mac 使用者，請參考 `HANDOVER.md` 第八節的跨平台替代方案（PaddleOCR、dots.ocr 等）。
+
 ## 主工具：apple-ocr-opencv
 
 結合 Apple Vision OCR + OpenCV 格線偵測的混合方案。
